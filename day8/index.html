@@ -1,0 +1,9 @@
+<!DOCTYPE html><html><head><title>TicketHub</title>
+<style>body{font-family:sans-serif}.seat{display:inline-block;width:42px;height:42px;margin:3px;text-align:center;line-height:42px;border:1px solid #ccc;cursor:pointer}.AVAILABLE{background:#e0ffe0}.HELD{background:#ffe0a0}.SOLD{background:#ffb3b3}</style>
+</head><body><h1>TicketHub - Demo</h1><div id="events"></div><div id="seats"></div>
+<script>
+async function loadEvents(){const r=await fetch('http://localhost:3000/api/events');const d=await r.json();document.getElementById('events').innerHTML=d.map(e=>`<button onclick="loadSeats(${e.id})">${e.name}</button>`).join('');}
+async function loadSeats(id){const r=await fetch(`http://localhost:3000/api/events/${id}/seats`);const s=await r.json();document.getElementById('seats').innerHTML=s.map(x=>`<div class="seat ${x.status}" onclick="hold(${id},${x.id})">${x.label}</div>`).join('');}
+async function hold(eventId, seatId){const res=await fetch(`http://localhost:3000/api/events/${eventId}/holds`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({seatIds:[seatId],userId:'00000000-0000-0000-0000-000000000001'})});const data=await res.json();alert(res.ok?'Held '+data.holdId:'Failed '+data.error);loadSeats(eventId);}
+loadEvents();
+</script></body></html>
