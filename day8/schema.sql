@@ -1,0 +1,11 @@
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE TABLE users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), email VARCHAR(255) UNIQUE NOT NULL, name VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT NOW());
+CREATE TABLE events (id SERIAL PRIMARY KEY, name VARCHAR(255) NOT NULL, artist VARCHAR(255), venue VARCHAR(255), start_time TIMESTAMP NOT NULL, total_seats INT NOT NULL, status VARCHAR(20) DEFAULT 'on_sale');
+CREATE TABLE seats (id SERIAL PRIMARY KEY, event_id INT REFERENCES events(id) ON DELETE CASCADE, label VARCHAR(20) NOT NULL, section VARCHAR(20), status VARCHAR(20) DEFAULT 'AVAILABLE' CHECK (status IN ('AVAILABLE','HELD','SOLD')), hold_id UUID, version INT DEFAULT 0, UNIQUE(event_id, label));
+CREATE INDEX idx_seats_event_status ON seats(event_id, status);
+CREATE TABLE holds (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID REFERENCES users(id), event_id INT REFERENCES events(id), expires_at TIMESTAMP NOT NULL, status VARCHAR(20) DEFAULT 'ACTIVE');
+CREATE INDEX idx_holds_expires ON holds(expires_at);
+CREATE TABLE hold_seats (hold_id UUID REFERENCES holds(id) ON DELETE CASCADE, seat_id INT REFERENCES seats(id) ON DELETE CASCADE, PRIMARY KEY (hold_id, seat_id));
+CREATE TABLE orders (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID REFERENCES users(id), event_id INT REFERENCES events(id), hold_id UUID UNIQUE REFERENCES holds(id), total_amount INT NOT NULL, status VARCHAR(20) DEFAULT 'PAID', created_at TIMESTAMP DEFAULT NOW());
+INSERT INTO events (name, artist, venue, start_time, total_seats) VALUES ('Big Sale Concert','AfroPop Star','FNB Stadium','2026-11-01 19:00:00', 20000);
+INSERT INTO seats (event_id, label, section) SELECT 1, chr(65 + (s/100)::int) || '-' || (s%100), 'Section ' || (s/1000)::int FROM generate_series(1,20000) s;
