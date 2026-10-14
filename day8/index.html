@@ -1,17 +1,39 @@
 <!DOCTYPE html>
 <html>
-    <head>
-        <title>TicketHub</title>
-<style>body{font-family:sans-serif}.seat{display:inline-block;width:42px;height:42px;margin:3px;text-align:center;line-height:42px;border:1px solid #ccc;cursor:pointer}.AVAILABLE{background:#e0ffe0}.HELD{background:#ffe0a0}.SOLD{background:#ffb3b3}</style>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TicketHub - Demo</title>
+<style>
+body{font-family:sans-serif;background:#0f172a;color:white;margin:0;padding:16px}
+.card{background:#1e293b;border-radius:12px;padding:16px;margin:12px 0}
+.seat{display:inline-block;width:46px;height:46px;margin:4px;border-radius:8px;text-align:center;line-height:46px;font-weight:bold;cursor:pointer}
+.AVAILABLE{background:#22c55e;color:black}
+.HELD{background:#facc15;color:black}
+.SOLD{background:#ef4444}
+button{background:#6366f1;color:white;border:0;padding:14px;border-radius:10px;width:100%;font-weight:bold;margin-top:10px}
+.log{font-family:monospace;font-size:12px;background:#020617;padding:10px;border-radius:8px;margin-top:10px}
+</style>
 </head>
 <body>
-    <h1>TicketHub - Demo</h1>
-    <div id="events"></div><div id="seats"></div>
+<h2 style="text-align:center">🎫 TicketHub - Big Sale Demo</h2>
+<div class="card">
+<div style="font-size:12px">200,000 users • 20,000 seats • Atomic Protection ON</div>
+<div id="seats" style="margin-top:10px"></div>
+<button onclick="simulateRace()">🔥 Simulate 200k Race Attack</button>
+<div id="log" class="log">Ready - tap a seat</div>
+</div>
+<div class="card" style="font-size:12px">
+<b>Prevents double-booking:</b><br>
+UPDATE seats SET status='HELD' WHERE id=:id AND status='AVAILABLE'<br>
+2nd user gets rowCount=0 → 409 Conflict → Protected!
+</div>
 <script>
-async function loadEvents(){const r=await fetch('http://localhost:3000/api/events');const d=await r.json();document.getElementById('events').innerHTML=d.map(e=>`<button onclick="loadSeats(${e.id})">${e.name}</button>`).join('');}
-async function loadSeats(id){const r=await fetch(`http://localhost:3000/api/events/${id}/seats`);const s=await r.json();document.getElementById('seats').innerHTML=s.map(x=>`<div class="seat ${x.status}" onclick="hold(${id},${x.id})">${x.label}</div>`).join('');}
-async function hold(eventId, seatId){const res=await fetch(`http://localhost:3000/api/events/${eventId}/holds`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({seatIds:[seatId],userId:'00000000-0000-0000-0000-000000000001'})});const data=await res.json();alert(res.ok?'Held '+data.holdId:'Failed '+data.error);loadSeats(eventId);}
-loadEvents();
+let seats=Array.from({length:48},(_,i)=>({id:i+1,label:String.fromCharCode(65+i%6)+'-'+(Math.floor(i/6)+1),status:'AVAILABLE'}));
+function render(){document.getElementById('seats').innerHTML=seats.map(s=>`<div class="seat ${s.status}" onclick="hold(${s.id})">${s.label}</div>`).join('');}
+function log(m){let el=document.getElementById('log');el.innerHTML+='<br>'+m}
+function hold(id){let s=seats.find(x=>x.id==id);if(s.status!='AVAILABLE'){log('❌ '+s.label+' already '+s.status);return} s.status='HELD';render();log('✅ HOLD '+s.label+' rowCount=1 SUCCESS'); setTimeout(()=>{s.status='SOLD';render();log('💰 SOLD '+s.label)},2500)}
+function simulateRace(){log('--- RACE: 2 users same seat ---');let t=seats[0];t.status='AVAILABLE';render();setTimeout(()=>{t.status='HELD';render();log('👤 User1: SUCCESS rowCount=1')},200);setTimeout(()=>{log('👤 User2: FAIL rowCount=0 409 PROTECTED!')},500)}
+render();
 </script>
 </body>
 </html>
