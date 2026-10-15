@@ -1,98 +1,67 @@
-# TicketHub - System Design
+# TicketHub - 200k User Ticket Sale - System Design
 
-## 1. Requirements
+**Live Demo:** https://ginahAphane.github.io/web-foundations-days/day8/
+**Problem:** 200,000 users competing for 20,000 seats at same time. Prevent double-booking at scale.
 
-### Functional Requirements
-- Users can browse events, search by date/venue/artist
-- Users can view venue seat map and seat availability (Available, Held, Sold)
-- Users can hold seats for 10 minutes (temporary reservation)
-- Users can pay for held seats and get tickets (QR code)
-- Users can view their order history / tickets
-- Admin can create events and define seat inventory
-- System must prevent double-booking of same seat
+## 1. Architecture and Scaling (25 points)
 
-### Non-Functional Requirements
-- **Correctness:** Zero double-bookings. Atomic seat reservation is critical.
-- **Speed:** Browse p95 < 300ms, View seat map p95 < 500ms, Hold p95 < 800ms even under peak
-- **Scalability:** Survive "big sale" - 200,000 people trying to buy 20,000 seats in 10 minutes
-- **Availability:** 99.9% during sale
-- **Fairness:** FIFO queue during overload, rate limiting per user
+**Every component justified by a problem:**
 
-## 2. Estimates
+- **CDN (Cloudflare):** Problem - 200k users loading seats page crashes origin. Solution - Cache static HTML/JS at edge, reduces origin load by 90%.
+- **API Gateway + Load Balancer:** Problem - Single server dies at 200k RPS. Solution - Horizontal scaling to 10 nodes behind ALB, 20k RPS per node.
+- **Redis Cache:** Problem - DB query for 20k seats on every refresh kills DB. Solution - Cache seat availability in Redis with 2s TTL, serve 95% reads from cache.
+- **PostgreSQL (Primary):** Problem - Concurrent writes cause double-booking. Solution - Atomic conditional update is source of truth.
+- **Queue (SQS) for Payment:** Problem - Payment API slow, holds expire. Solution - Async payment processing, holds extended via queue.
 
-### Normal Traffic
-- 2M registered users, 50,000 DAU, each viewing 10 pages = 500,000 page views/day
-- QPS: Browse 500 req/s, Seat Map 200 req/s, Hold 10 req/s, Payment 5 req/s (5,000 tickets sold/day)
-- Storage: 100k events/year * 5000 seats avg = 500M seat rows archived
+**Estimates:**
+- 200,000 RPS peak, 20,000 seats = average 10 contenders per seat
+- 200k * 500 bytes = 100MB/s ingress
+- DB writes: 20k successful holds, ~180k failed with 409 (cheap)
+- Cache hit ratio 95% = 10k DB reads/sec instead of 200k
 
-### Big Sale Peak
-- 200,000 people try to buy 20,000 seats in first 10 minutes (600 seconds)
-- QPS spike: 200,000 / 600 = 333 hold attempts per second for same event
-- Seat Map: 20,000 req/s (100x), Hold: 5,000 req/s (500x), Payment: 500 req/s (100x)
-- Comparison: Normal = read-light, write-rare. Big Sale = read-heavy + contention-heavy. Need cache + queue.
+**Trade-off Explained:**
+Chose **Optimistic Locking (UPDATE ... WHERE status='AVAILABLE' + rowCount check)** over **Pessimistic Locking (SELECT FOR UPDATE)**.
+Pessimistic would lock the row for entire transaction, creating a bottleneck queue of 200k transactions waiting, leading to timeouts and deadlocks.
+Optimistic allows all 200k to attempt concurrently, DB executes atomically, only one wins (rowCount=1), others get rowCount=0 -> 409 Conflict. Higher throughput, lower latency, no lock contention. Retry cost is acceptable because failure is graceful.
 
-We design for peak, scale down for normal.
+## 2. API Design (20 points) - RESTful
 
-## 3. API Design
+### POST /api/hold
+Hold a seat for 5 minutes.
+- Request: `{ "seatId": "C-3", "userId": "u_123" }`
+- Success: 201 Created `{ "holdId": "h_abc", "expiresAt": "2026-10-14T17:43:00Z" }`
+- Error: 409 Conflict `{ "error": "Seat already held" }` - when rowCount=0
+- Error: 404 Not Found - seat doesn't exist
 
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| GET | /api/events?search=&date=&venue= | Browse events |
-| GET | /api/events/{eventId} | Event details |
-| GET | /api/events/{eventId}/seats | View seat map |
-| POST | /api/events/{eventId}/holds | Hold seats |
-| POST | /api/orders | Pay for held seats |
-| GET | /api/users/me/orders | View my tickets |
-| DELETE | /api/holds/{holdId} | Release hold |
+### POST /api/confirm
+Confirm payment for held seat.
+- Request: `{ "holdId": "h_abc", "paymentToken": "tok_123" }`
+- Success: 201 Created `{ "orderId": "o_123", "ticket": "C-3" }`
+- Error: 410 Gone - hold expired
+- Error: 409 Conflict - seat sold by another transaction
 
-Example:
-POST /api/events/123/holds {"seatIds":["A-12","A-13"]}
-201 Created: {"holdId":"h_abc","expiresAt":"2026-10-21T10:10:00Z"}
+### GET /api/seats
+List availability (cached in Redis).
+- Success: 200 OK `{ "seats": [{"id":"A-2","status":"AVAILABLE"}, ...], "total": 20000, "available": 18500 }`
 
-Status: 200 OK, 201 Created, 404 Not Found, 409 Conflict (seat taken), 429 Too Many Requests, 410 Gone
+### GET /api/my-tickets
+User's tickets.
+- Success: 200 OK `{ "tickets": [...] }`
+- Error: 401 Unauthorized
 
-## 4. Data Model
+### DELETE /api/hold/:id
+Release hold early.
+- Success: 204 No Content
+- Error: 404 Not Found
 
-**users**: id PK UUID, email UNIQUE, name, created_at
-**events**: id PK, name, artist, venue_id, start_time, total_seats, status
-**seats**: id PK, event_id FK, label (A-12), section, status ENUM (AVAILABLE,HELD,SOLD), hold_id FK nullable, version INT, UNIQUE(event_id,label)
-**holds**: id PK UUID, user_id FK, event_id FK, expires_at, status (ACTIVE,EXPIRED,CONVERTED)
-**hold_seats**: hold_id FK, seat_id FK, PK(hold_id,seat_id)
-**orders**: id PK UUID, user_id FK, event_id FK, hold_id FK UNIQUE, total_amount, status, payment_ref, created_at
+## 3. Data Model (20 points)
 
-Relationships: events 1--* seats, users 1--* holds, users 1--* orders, holds 1--* hold_seats, holds 1--1 orders
+See schema.sql for full DDL with keys, types, constraints.
 
-## 5. Preventing Double-Booking
+- seats: PK, CHECK status, version for optimistic locking
+- holds: PK, FK to seats, FK to users, expires_at with index, CHECK
+- orders: PK, FK, unique seat per order, status CHECK
 
-Cache and CDN only SHOW availability. They DO NOT guarantee safety because they are stale and 2 app servers can read AVAILABLE at same time.
+## 4. Working Demo (20 points)
 
-We use atomic conditional transaction in Postgres:
-
-BEGIN;
-SELECT * FROM seats WHERE id IN (:seatIds) AND event_id=:eventId FOR UPDATE;
--- if any status!= AVAILABLE, ROLLBACK 409
-UPDATE seats SET status='HELD', hold_id=:holdId, version=version+1 WHERE id IN (:seatIds) AND status='AVAILABLE';
--- check rowCount == requested, else ROLLBACK
-COMMIT;
-
-If 2 users try same seat, DB serializes. First UPDATE affects 1 row, second affects 0 rows. We return 409 Conflict. This guarantees zero double-booking.
-
-## 6. Architecture
-
-Components:
-1. CDN (Cloudflare): static + cached GET /events - offloads 80% reads
-2. Load Balancer (ALB): distributes to 4-50 app servers (horizontal scaling)
-3. API Gateway + Rate Limiter (Redis): 10 req/s per IP for holds, virtual queue token
-4. App Servers: stateless Node.js, auto-scaled
-5. Redis Cache: seat map cache 5s TTL + SETNX lock as pre-check
-6. Postgres Primary + Read Replicas: source of truth for atomic TX
-7. Queue (BullMQ): order processing
-8. Payment Gateway (Stripe): idempotent via holdId
-
-Big Sale Flow: User -> CDN -> LB -> Rate Limiter (queue if overloaded) -> App Server -> Check Redis -> Try atomic DB hold -> Return holdId -> Pay in 10 min. If DB overloaded, keep users in queue (backpressure).
-
-## 7. Trade-offs
-
-1. Strong Consistency vs Availability: We choose CP for holds to prevent double-booking, even if slower, vs AP which would risk overselling.
-2. Hold Expiry 10 min vs UX: Short 2 min frees inventory fast but frustrates payment; long 30 min good UX but blocks seats. 10 min middle ground.
-3. Pre-computed Seats Table vs Dynamic: Pre-create 20k rows per event uses more storage but gives O(1) atomic updates. Trade storage for correctness.
+Live at /day8/ - Simulates 200k race attack, shows rowCount=1 SUCCESS vs rowCount=0 409 PROTECTED, graceful error handling without crash.
